@@ -39,7 +39,8 @@
                 <span class="block text-sm font-medium">{{ r.code }}</span>
                 <span class="block text-xs opacity-80">{{ r.name }} · {{ r.city }}</span>
                 <span class="mt-1 block text-xs tabular-nums">
-                  {{ r.totalRooms }} rooms · {{ money(r.rateCents) }} a night
+                  {{ r.totalRooms }} {{ r.totalRooms === 1 ? 'room' : 'rooms' }} ·
+                  {{ money(r.rateCents) }} a night
                 </span>
               </button>
             </li>
@@ -145,8 +146,8 @@
           <div class="flex flex-wrap items-baseline justify-between gap-2">
             <h2 id="book-h" class="text-lg font-semibold">Book a stay in {{ r.code }}</h2>
             <p class="text-sm tabular-nums text-slate-600">
-              {{ r.name }} · {{ r.city }} · {{ r.totalRooms }} rooms · {{ money(r.rateCents) }} a
-              night
+              {{ r.name }} · {{ r.city }} · {{ r.totalRooms }}
+              {{ r.totalRooms === 1 ? 'room' : 'rooms' }} · {{ money(r.rateCents) }} a night
             </p>
           </div>
           <form
