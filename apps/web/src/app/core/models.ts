@@ -20,6 +20,7 @@ export type BookingStatus = 'Requested' | 'Held' | 'Confirmed' | 'Cancelled' | '
 export interface Booking {
   id: string;
   roomTypeCode: string;
+  ownerId: string;
   reference: string;
   checkIn: string;
   checkOut: string;
@@ -39,4 +40,16 @@ export interface LogEntry {
   type: string;
   module: string;
   occurredAt: string;
+}
+
+export interface UserInfo {
+  id: string;
+  email: string;
+  roles: string[];
+}
+
+export interface AuthResponse {
+  accessToken: string;
+  expiresAt: string;
+  user: UserInfo;
 }

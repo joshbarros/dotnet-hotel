@@ -1,20 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Confluent.Kafka" Version="2.16.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Scalar.AspNetCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
-    <PackageReference Include="RabbitMQ.Client" Version="7.2.2" />
-    <PackageReference Include="Scalar.AspNetCore" Version="2.17.14" />
+    <ProjectReference Include="../../libs/shared/Hotel.Shared.csproj" />
+    <ProjectReference Include="../../libs/identity/Hotel.Identity.csproj" />
+    <ProjectReference Include="../../libs/bookings/Hotel.Bookings.csproj" />
+    <ProjectReference Include="../../libs/rooms/Hotel.Rooms.csproj" />
+    <ProjectReference Include="../../libs/vouchers/Hotel.Vouchers.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hotel.IntegrationTests" />
   </ItemGroup>
 </Project>

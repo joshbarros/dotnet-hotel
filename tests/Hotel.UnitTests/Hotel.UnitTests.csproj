@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" />
+    <ProjectReference Include="../../libs/shared/Hotel.Shared.csproj" />
+    <ProjectReference Include="../../libs/identity/Hotel.Identity.csproj" />
+    <ProjectReference Include="../../libs/bookings/Hotel.Bookings.csproj" />
+    <ProjectReference Include="../../libs/rooms/Hotel.Rooms.csproj" />
+    <ProjectReference Include="../../libs/vouchers/Hotel.Vouchers.csproj" />
+  </ItemGroup>
+</Project>

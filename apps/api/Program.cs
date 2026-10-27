@@ -1,59 +1,76 @@
-using Hotel.Api.Data;
-using Hotel.Api.Messaging;
-using Hotel.Api.Middleware;
-using Hotel.Api.Modules.Bookings;
-using Hotel.Api.Modules.Rooms;
-using Hotel.Api.Modules.Vouchers;
-using Microsoft.EntityFrameworkCore;
+using Hotel.Bookings;
+using Hotel.Rooms;
+using Hotel.Vouchers;
+using Hotel.Identity;
+using Hotel.Shared;
+using Hotel.Shared.Auth;
+using Hotel.Shared.Http;
+using Hotel.Shared.Messaging;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
+var config = builder.Configuration;
 
-builder.Services.AddControllers().AddJsonOptions(o => o.JsonSerializerOptions.PropertyNameCaseInsensitive = true);
+if (config.GetValue("Logging:Json", false))
+    builder.Logging.AddJsonConsole(o =>
+    {
+        o.IncludeScopes = true;
+        o.UseUtcTimestamp = true;
+    });
+
+builder.Services.AddControllers()
+    .AddJsonOptions(o => o.JsonSerializerOptions.PropertyNameCaseInsensitive = true)
+    .AddApplicationPart(typeof(IdentityModule).Assembly)
+    .AddApplicationPart(typeof(BookingsModule).Assembly)
+    .AddApplicationPart(typeof(RoomsModule).Assembly)
+    .AddApplicationPart(typeof(VouchersModule).Assembly);
 builder.Services.AddProblemDetails();
 builder.Services.AddOpenApi();
+builder.Services.AddHotelAuthorization();
 
-var connectionString = builder.Configuration.GetConnectionString("Hotel")
-    ?? throw new InvalidOperationException("Connection string 'Hotel' is not configured.");
-builder.Services.AddDbContext<HotelDbContext>(options => options.UseNpgsql(connectionString));
+builder.Services.AddIdentityModule(config);
+var messaging = builder.Services.AddMessaging(config);
+builder.Services.AddBookingsModule(config, messaging);
+builder.Services.AddRoomsModule(config, messaging);
+builder.Services.AddVouchersModule(config, messaging);
+messaging.Start();
 
-builder.Services.Configure<RabbitOptions>(builder.Configuration.GetSection("RabbitMq"));
-builder.Services.Configure<KafkaOptions>(builder.Configuration.GetSection("Kafka"));
-builder.Services.Configure<BookingOptions>(builder.Configuration.GetSection("Bookings"));
-builder.Services.AddSingleton<RabbitConnection>();
-builder.Services.AddSingleton<KafkaLog>();
-
-builder.Services.AddScoped<BookingService>();
-builder.Services.AddScoped<RoomsHandler>();
-builder.Services.AddScoped<VouchersHandler>();
-builder.Services.AddScoped<BookingsHandler>();
-
-builder.Services.AddHostedService<OutboxRelay>();
-builder.Services.AddHostedService(sp => new ModuleConsumer<RoomsHandler>(
-    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<RabbitConnection>(),
-    new ConsumerSpec(Topology.RoomsQueue, [Topology.ReserveKey, Topology.ReleaseKey], Prefetch: 1),
-    sp.GetRequiredService<ILogger<ModuleConsumer<RoomsHandler>>>()));
-builder.Services.AddHostedService(sp => new ModuleConsumer<VouchersHandler>(
-    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<RabbitConnection>(),
-    new ConsumerSpec(Topology.VouchersQueue, [Topology.HeldKey], Prefetch: 4),
-    sp.GetRequiredService<ILogger<ModuleConsumer<VouchersHandler>>>()));
-builder.Services.AddHostedService(sp => new ModuleConsumer<BookingsHandler>(
-    sp.GetRequiredService<IServiceScopeFactory>(), sp.GetRequiredService<RabbitConnection>(),
-    new ConsumerSpec(Topology.BookingsQueue,
-        [Topology.HeldKey, Topology.ShortKey, Topology.IssuedKey, Topology.RejectedKey, Topology.ReleasedKey], Prefetch: 4),
-    sp.GetRequiredService<ILogger<ModuleConsumer<BookingsHandler>>>()));
+if (config.GetValue("ForwardedHeaders:Enabled", false))
+    builder.Services.Configure<ForwardedHeadersOptions>(o =>
+    {
+        // Behind the nginx container the real client address arrives in X-Forwarded-For. Trusting every proxy is only safe
+        // when the API is reachable through the proxy alone; restrict KnownNetworks to the proxy's network in production.
+        o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        o.KnownIPNetworks.Clear();
+        o.KnownProxies.Clear();
+    });
 
 var app = builder.Build();
 
-app.UseMiddleware<ExceptionHandler>();
-app.MapControllers();
-app.MapOpenApi();
-app.MapScalarApiReference();
-app.MapGet("/api/health", () => Results.Text("Healthy"));
+if (config.GetValue("ForwardedHeaders:Enabled", false))
+    app.UseForwardedHeaders();
+app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseMiddleware<SecurityHeadersMiddleware>();
+app.UseMiddleware<ExceptionMiddleware>();
+app.UseStatusCodePages();
+app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
 
-using (var scope = app.Services.CreateScope())
+app.MapControllers();
+app.MapGet("/api/health", () => Results.Text("Healthy")).AllowAnonymous();
+app.MapHealthChecks("/api/health/ready", new HealthCheckOptions { Predicate = r => r.Tags.Contains("ready") }).AllowAnonymous();
+if (config.GetValue("Docs:Public", false))
 {
-    await scope.ServiceProvider.GetRequiredService<HotelDbContext>().Database.MigrateAsync();
+    app.MapOpenApi().AllowAnonymous();
+    app.MapScalarApiReference().AllowAnonymous();
 }
 
+foreach (var migrator in app.Services.GetServices<IModuleMigrator>().OrderBy(m => m.Order))
+    await migrator.MigrateAsync(app.Services, CancellationToken.None);
+
 app.Run();
+
+public partial class Program;

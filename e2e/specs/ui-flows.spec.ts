@@ -1,10 +1,11 @@
 import { test, expect, Page } from '@playwright/test';
+import { ADMIN, signIn } from './support';
 
 const run = () => Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1000);
 const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 
 async function addRoomType(page: Page, code: string, totalRooms: number) {
-  await page.goto('/');
+  await signIn(page, ADMIN);
   await page.getByLabel('Room type code').fill(code);
   await page.getByLabel('Total rooms').fill(String(totalRooms));
   await page.getByRole('button', { name: 'Add room type' }).click();
@@ -41,7 +42,7 @@ test('the API refuses bad input and the page says why', async ({ page }) => {
   await book(page, `GUEST-${id}`, -2, 2, 1);
   await expect(page.getByRole('alert')).toContainText('in the past');
 
-  await book(page, '   ', 1, 2, 1);
+  await book(page, ' ', 1, 2, 1);
   await expect(page.getByRole('alert')).toContainText(/reference is required/i);
 
   await book(page, `GUEST-${id}`, 1, 2, 1);
