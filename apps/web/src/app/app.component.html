@@ -8,6 +8,13 @@
     </span>
     <button
       type="button"
+      (click)="showSecurity.set(!showSecurity())"
+      class="rounded px-2 py-1 text-xs text-slate-600 ring-1 ring-slate-300 hover:bg-slate-50"
+    >
+      Security
+    </button>
+    <button
+      type="button"
       (click)="signOut()"
       class="rounded px-2 py-1 text-xs text-slate-600 ring-1 ring-slate-300 hover:bg-slate-50"
     >
@@ -19,6 +26,9 @@
 @if (!auth.ready()) {
   <p class="mx-auto max-w-6xl px-4 py-8 text-sm text-slate-500">Loading…</p>
 } @else if (auth.user()) {
+  @if (showSecurity()) {
+    <div class="px-4 pt-4"><app-security /></div>
+  }
   <app-workspace />
 } @else {
   <app-login />
