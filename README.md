@@ -101,6 +101,7 @@ Modules still talk only through messages: RabbitMQ carries the commands, Kafka k
 | Refresh token | 256 random bits in an `HttpOnly`, `SameSite=Strict`, `Path=/api/auth` cookie (`Secure` over HTTPS). Only its SHA-256 is stored. Every refresh **rotates** it with a conditional `UPDATE`, so two concurrent refreshes with the same token cannot both win. Presenting a token that was already used revokes the whole family. Refresh and logout also need an `X-Requested-With: hotel-web` header, so another site cannot trigger them. |
 | Roles | `Customer` (default at registration), `Staff`, `Admin`. An administrator is seeded from configuration on first start. |
 | Rules | Anonymous: `/api/health`, `/api/auth/*`. Any signed-in user: read roomTypes, book, read and cancel **their own** bookings and vouchers. `Staff` and `Admin`: open roomTypes, read everything, read the event log. Another user's booking or voucher is `404`, not `403`, so ids do not leak. The owner of a booking is the caller; a body field cannot set it. |
+| Messaging | The outbox is drained by any number of relays at once (`FOR UPDATE SKIP LOCKED`, so no row is published twice at the same time) and trimmed on a schedule. Staff can look inside the dead-letter queues and replay them from the API. |
 | Hardening | A rate limit on `/api/auth/*` per client (`RateLimit:AuthPerMinute`), **counted in Postgres** so every API instance shares one count, security headers on every response (`nosniff`, `DENY`, strict CSP, `no-referrer`), a correlation id echoed in `X-Correlation-Id` and in every problem response, JSON logs (`Logging:Json`), forwarded headers only when `ForwardedHeaders:Enabled`, a fallback policy that makes every endpoint authenticated unless it opts out, and a readiness endpoint that checks every module schema. |
 
 ## Run it
@@ -109,7 +110,7 @@ Needs Node 22 (npm 10), .NET SDK 10.0.401 (`global.json`), Docker (arm64 is fine
 
 ```bash
 npm ci
-dotnet test tests/Hotel.UnitTests   # 122 tests, no Docker
+dotnet test tests/Hotel.UnitTests   # 124 tests, no Docker
 docker compose up -d --wait db        # the integration tests use Postgres on 5476 (database hotel_test)
 docker compose exec db createdb -U hotel hotel_test   # once
 dotnet test tests/Hotel.IntegrationTests
@@ -180,8 +181,8 @@ npx nx build web && npx nx build api            # what CI builds
 
 ## What is tested, and where it runs
 
-- **Unit tests** (`tests/Hotel.UnitTests`, 122 tests, no Docker, about 3 seconds): the booking rules and fee, the poison rule including integer overflow, token creation and validation, password and lockout behaviour fails the auth service on an in-memory store, owner-or-staff access, the retry policy and topology, message serialization, the outbox `DbContext` conventions, and the HTTP middleware (problem details are `application/problem+json`, security headers, correlation ids).
-- **Integration tests** (`tests/Hotel.IntegrationTests`, 62 tests, real Postgres): the rooms race (two tasks, two `DbContext`s, one unitthat are `Held`, one `Short`, a stay overlapping the loser) and the check constraint behind it; the saga handlers against the real schema (duplicate delivery claimed once, a release returns the unit once, the poison rejection committed before the dead-letter, cancellation then late final mark); and the **whole HTTP pipeline** through `WebApplicationFactory`: register, login, wrong password, lockout, expired and tampered tokens, refresh rotation, replay revoking the family, two concurrent refreshes (exactly one wins), logout, the same-city header, the auth rate limit, and 401/403/404 for every route and ownership case. Two mutations were run against a read-then-write version fails the race and overlap tests.
+- **Unit tests** (`tests/Hotel.UnitTests`, 124 tests, no Docker, about 3 seconds): the booking rules and fee, the poison rule including integer overflow, token creation and validation, password and lockout behaviour fails the auth service on an in-memory store, owner-or-staff access, the retry policy and topology, message serialization, the outbox `DbContext` conventions, and the HTTP middleware (problem details are `application/problem+json`, security headers, correlation ids).
+- **Integration tests** (`tests/Hotel.IntegrationTests`, 68 tests, real Postgres): the rooms race (two tasks, two `DbContext`s, one unitthat are `Held`, one `Short`, a stay overlapping the loser) and the check constraint behind it; the saga handlers against the real schema (duplicate delivery claimed once, a release returns the unit once, the poison rejection committed before the dead-letter, cancellation then late final mark); and the **whole HTTP pipeline** through `WebApplicationFactory`: register, login, wrong password, lockout, expired and tampered tokens, refresh rotation, replay revoking the family, two concurrent refreshes (exactly one wins), logout, the same-city header, the auth rate limit, and 401/403/404 for every route and ownership case. Two mutations were run against a read-then-write version fails the race and overlap tests.
 - **`scripts/smoke.sh`** drives the composed stack: authentication and ownership first (401, 403, 404), then validation, the happy path (fee, voucher, Kafka log), the last room with three concurrent bookings, the poison reference (rejected, `vouchers.work.dlq` gains one message, nights restored), and a cancellation that lands between the voucher and the final mark. To make that last window wide enough to hit on purpose, Compose sets `Bookings__FinalMarkDelayMs=1500`; it is a latency knob and defaults to 0.
 - **Playwright** (`e2e/specs`, 14 tests, Chromium): `auth.spec.ts` (anonymous sees only the form, wrong password, password policy, a customer books and sees only their own bookings with no staff controls, sign-out, the session surviving a reload through the cookie while `document.cookie` stays empty); `book-space.spec.ts` (open each night, and the stays that draw them down, book, voucher, reload, cancel); `ui-flows.spec.ts` (refusal messages, the poison rejection, the loser of a race, the Kafka event log). They run against the composed web port and against the Nx dev servers.
 - **CI** (`.github/workflows/ci.yml`) has two jobs. `verify`: `npm ci`, Prettier check, `dotnet format whitespace --verify-no-changes`, unit tests, integration tests (Postgres 17 service) with coverage uploaded, a NuGet vulnerability check, `npm audit`, `nx typecheck` and `nx lint` for web (zero warnings allowed) and `nx build`. `e2e`: builds the Compose stack, runs the smoke and every Playwright spec, and uploads traces and prints logs on failure. Dependabot watches NuGet, npm, Actions and Docker.
@@ -216,10 +217,11 @@ JSON over HTTP. Everything except health and `/api/auth/register|login|refresh|l
 | `POST /api/room-types` | Opens a room type for sale on a run of nights (default 30 from today). Staff. | `201`, `400` invalid, `403`, `409` code exists |
 | `GET /api/room-types`, `GET /api/room-types/{code}` | RoomTypes with the first open night, 14 days, at most 60). | `200`, `404` |
 | `POST /api/bookings` | Accepts a stay for the caller and starts the saga. | `202` Requested, `400` invalid, `404` unknown roomType, `409` duplicate reference |
-| `GET /api/bookings?roomTypeCode=` | The caller's latest 100 bookings (staff: everyone's), optionally for one roomType. | `200` |
+| `GET /api/bookings?roomTypeCode=&page=&pageSize=` | The caller's bookings, newest first, a page at a time (`pageSize` at most 100, default 100). Staff: everyone's. The total is in `X-Total-Count`. | `200` |
 | `GET /api/bookings/{id}` | One booking and its status. Owner or staff. | `200`, `404` |
 | `POST /api/bookings/{id}/cancellation` | Moves a held or confirmed booking to `Cancelled` and gives the nights back. The voucher is not touched. Owner or staff. | `202`, `404`, `409` wrong status |
 | `GET /api/bookings/{id}/events` | The Kafka event log for one booking. Staff. | `200`, `403` |
+| `GET /api/admin/dead-letters`, `POST /api/admin/dead-letters/{queue}/replay` | What waits in each dead-letter queue, with the first messages; publish them again. Staff. A message that still fails for the same reason is dead-lettered again. | `200`, `403`, `503` brokers off |
 | `GET /api/vouchers/{bookingId}` | The voucher row. Owner or staff. | `200`, `404` |
 
 Errors come back as `application/problem+json` with a `title` and the `correlationId`.
@@ -245,6 +247,7 @@ Compose sets these on the API container. Defaults in `apps/api/appsettings.json`
 | `ForwardedHeaders__Enabled` | `true` | Trust `X-Forwarded-*` from the reverse proxy (nginx here). Leave off when the API is reached directly. |
 | `Docs__Public` | `true` | Serve Scalar and OpenAPI without a token. |
 | `Logging__Json` | `true` | Structured JSON console logs. |
+| `Messaging__OutboxRetentionDays` / `Messaging__InboxRetentionDays` | `7` / `30` | Sent outbox rows and old inbox claims are deleted after this long. The inbox is kept longer because it must outlive any redelivery. |
 | `Bookings__FinalMarkDelayMs` | `1500` | Milliseconds the final mark waits. A latency knob so the smoke can land a cancellation inside the window. `0` outside Compose. |
 | `HOTEL_TEST_DB` (tests only) | | Postgres connection for `dotnet test`. Defaults to `localhost:5476`, database `hotel_test`. CI points it at its service container. |
 
@@ -269,10 +272,9 @@ open http://127.0.0.1:15706        # RabbitMQ management, platform / platform
 - Sign-in is email and password plus optional TOTP. There are no external identity providers (Google, Microsoft) and no WebAuthn passkeys.
 - Revocation is eventual by design: an instance may honour a revoked access token for up to `Jwt:RevocationCacheSeconds` seconds. Set it to `0` to check the database on every request.
 - Delivery is at-least-once, not exactly-once. The inbox makes repeats harmless for the saga; the Kafka log can hold a duplicate event after a relay crash.
-- One broker, one partition, replication factor 1, one API instance. The relay does not coordinate across instances (the inbox would absorb the duplicates, but the outbox is never trimmed).
-- `GET .../events` scans the whole topic for each call. Fine here, not something to expose at scale.
-- Lists are capped at 100 rows and not paginated.
-- Dead-lettered messages are not replayed automatically.
+- Compose runs one of each broker (one Kafka partition, replication factor 1) and one API instance. The code itself is built for several API instances: the relay claims outbox rows with `FOR UPDATE SKIP LOCKED`, and the rate limit and revocation live in Postgres. A production Kafka and RabbitMQ would be clustered; that is configuration, not code.
+- `GET .../events` reads the Kafka topic for one key and gives up after ten seconds, so it scans the topic. Fine here, not something to expose at scale.
+- Replaying a dead letter only helps when the cause was fixed: the poison reference fails again by design.
 - The browser specs drive Chromium at a desktop size only, and the `e2e` CI job needs Docker and takes a few minutes.
 
 ## Layout

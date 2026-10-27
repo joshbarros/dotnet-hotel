@@ -72,7 +72,7 @@ public class BookingService(BookingsDbContext db, IRoomTypeCatalog roomTypes, IC
         return booking;
     }
 
-    public async Task<List<Booking>> ListAsync(string? roomTypeCode, CancellationToken ct)
+    public async Task<(List<Booking> Items, int Total)> ListAsync(string? roomTypeCode, int page, int pageSize, CancellationToken ct)
     {
         var query = db.Bookings.AsNoTracking();
         if (!user.IsStaff)
@@ -82,7 +82,9 @@ public class BookingService(BookingsDbContext db, IRoomTypeCatalog roomTypes, IC
         }
         if (!string.IsNullOrWhiteSpace(roomTypeCode))
             query = query.Where(b => b.RoomTypeCode == roomTypeCode);
-        return await query.OrderByDescending(b => b.CreatedAt).Take(100).ToListAsync(ct);
+        var total = await query.CountAsync(ct);
+        var items = await query.OrderByDescending(b => b.CreatedAt).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        return (items, total);
     }
 
     /// <summary>Moves Held or Confirmed to Cancelled and asks Rooms to give the nights back. The voucher is not touched.</summary>
