@@ -106,7 +106,7 @@ Needs Node 22 (npm 10), .NET SDK 10.0.401 (`global.json`), Docker (arm64 is fine
 
 ```bash
 npm ci
-dotnet test tests/Hotel.UnitTests   # 110 tests, no Docker
+dotnet test tests/Hotel.UnitTests   # 111 tests, no Docker
 docker compose up -d --wait db        # the integration tests use Postgres on 5476 (database hotel_test)
 docker compose exec db createdb -U hotel hotel_test   # once
 dotnet test tests/Hotel.IntegrationTests
@@ -136,26 +136,31 @@ API=http://127.0.0.1:5216
 login() { curl -s -X POST $API/api/auth/login -H 'content-type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}" | python3 -c 'import sys,json; print(json.load(sys.stdin)["accessToken"])'; }
 ADMIN="Authorization: Bearer $(login admin@hotel.local HotelAdmin2026)"
 
-curl -s -X POST $API/api/room-types -H "$ADMIN" -H 'content-type: application/json' \
-  -d '{"code":"HARBOR-DLX-KING","name":"Harbor Deluxe King","city":"Lisbon","totalRooms":3,"rateCents":10}'
-
 curl -s -X POST $API/api/auth/register -H 'content-type: application/json' \
   -d '{"email":"ana@example.com","password":"Passw0rd-Demo1"}'      # 201; its accessToken goes in $ANA below
 ANA="Authorization: Bearer <accessToken>"
 
-curl -s -X POST $API/api/bookings -H "$ANA" -H 'content-type: application/json' \
-  -d '{"roomTypeCode\":"HARBOR-DLX-KING","reference":"GUEST-1001","checkIn\":\"$CHECKIN\",\"nights\":3}'
-# 202, status Requested. Use the returned id:
+curl -s -H "$ADMIN" -X POST $API/api/room-types \
+  -H 'content-type: application/json' \
+  -d '{"code":"HARBOR-DLX-KING","name":"Harbor Deluxe King","city":"Lisbon","totalRooms":3,"rateCents":12000,"openNights":30}'
 
-curl -s -H "$ANA" $API/api/bookings/<id>             # Confirmed after a few seconds, with a three nights drop while the next night does not
+CHECKIN=$(python3 -c "import datetime; print(datetime.date.today() + datetime.timedelta(days=2))")
+curl -s -H "$ANA" -X POST $API/api/bookings \
+  -H 'content-type: application/json' \
+  -d "{\"roomTypeCode\":\"HARBOR-DLX-KING\",\"reference\":\"GUEST-1001\",\"checkIn\":\"$CHECKIN\",\"nights\":3,\"rooms\":2}"
+# The room type is open from today for 30 nights, so the check-in has to fall inside that window.
+# 202, status Requested, totalCents 72000. Use the returned id:
+
+curl -s -H "$ANA" $API/api/bookings/<id>                   # Confirmed after a few seconds, with a voucher number
 curl -s -H "$ANA" $API/api/vouchers/<id>
-curl -s -H "$ANA" $API/api/room-types/HARBOR-DLX-KING     # roomsLeft 7
-curl -s -H "$ADMIN" $API/api/bookings/<id>/events    # the Kafka log; staff only (a customer gets 403)
+curl -s -H "$ANA" "$API/api/room-types/HARBOR-DLX-KING/availability?from=$CHECKIN&days=7"   # rooms left per night
+curl -s -H "$ADMIN" $API/api/bookings/<id>/events            # the Kafka log for this booking
 
-curl -s -X POST -H "$ANA" $API/api/bookings/<id>/cancellation   # nights comes back; the voucher stays
+curl -s -H "$ANA" -X POST $API/api/bookings/<id>/cancellation \
+  -H 'content-type: application/json'                             # every night comes back; the voucher stays
 ```
 
-A guest is validated at the door: reference required (at most 40 characters), a check-in that is not in the past, 1 to 14 nights, 1 to 3 rooms,and every night of the stay must be open for sale. The poison match is a case-sensitive substring: `GUEST-POISON-7` and any longer token containing `POISON` match.
+A booking is validated at the door: guest reference required (at most 40 characters), a check-in that is not in the past, 1 to 14 nights, 1 to 3 rooms, and every night of the stay must be open for sale. The poison match is a case-sensitive substring: `GUEST-POISON-7` and any longer token containing `POISON` match.
 
 ## Develop with Nx
 
@@ -172,8 +177,8 @@ npx nx build web && npx nx build api            # what CI builds
 
 ## What is tested, and where it runs
 
-- **Unit tests** (`tests/Hotel.UnitTests`, 110 tests, no Docker, about 3 seconds): the booking rules and fee, the poison rule including integer overflow, token creation and validation, password and lockout behaviour fails the auth service on an in-memory store, owner-or-staff access, the retry policy and topology, message serialization, the outbox `DbContext` conventions, and the HTTP middleware (problem details are `application/problem+json`, security headers, correlation ids).
-- **Integration tests** (`tests/Hotel.IntegrationTests`, 48 tests, real Postgres): the rooms race (two tasks, two `DbContext`s, one unitthat are `Held`, one `Short`, a stay overlapping the loser) and the check constraint behind it; the saga handlers against the real schema (duplicate delivery claimed once, a release returns the unit once, the poison rejection committed before the dead-letter, cancellation then late final mark); and the **whole HTTP pipeline** through `WebApplicationFactory`: register, login, wrong password, lockout, expired and tampered tokens, refresh rotation, replay revoking the family, two concurrent refreshes (exactly one wins), logout, the same-city header, the auth rate limit, and 401/403/404 for every route and ownership case. Two mutations were run against a read-then-write version fails the race and overlap tests.
+- **Unit tests** (`tests/Hotel.UnitTests`, 111 tests, no Docker, about 3 seconds): the booking rules and fee, the poison rule including integer overflow, token creation and validation, password and lockout behaviour fails the auth service on an in-memory store, owner-or-staff access, the retry policy and topology, message serialization, the outbox `DbContext` conventions, and the HTTP middleware (problem details are `application/problem+json`, security headers, correlation ids).
+- **Integration tests** (`tests/Hotel.IntegrationTests`, 49 tests, real Postgres): the rooms race (two tasks, two `DbContext`s, one unitthat are `Held`, one `Short`, a stay overlapping the loser) and the check constraint behind it; the saga handlers against the real schema (duplicate delivery claimed once, a release returns the unit once, the poison rejection committed before the dead-letter, cancellation then late final mark); and the **whole HTTP pipeline** through `WebApplicationFactory`: register, login, wrong password, lockout, expired and tampered tokens, refresh rotation, replay revoking the family, two concurrent refreshes (exactly one wins), logout, the same-city header, the auth rate limit, and 401/403/404 for every route and ownership case. Two mutations were run against a read-then-write version fails the race and overlap tests.
 - **`scripts/smoke.sh`** drives the composed stack: authentication and ownership first (401, 403, 404), then validation, the happy path (fee, voucher, Kafka log), the last room with three concurrent bookings, the poison reference (rejected, `vouchers.work.dlq` gains one message, nights restored), and a cancellation that lands between the voucher and the final mark. To make that last window wide enough to hit on purpose, Compose sets `Bookings__FinalMarkDelayMs=1500`; it is a latency knob and defaults to 0.
 - **Playwright** (`e2e/specs`, 11 tests, Chromium): `auth.spec.ts` (anonymous sees only the form, wrong password, password policy, a customer books and sees only their own bookings with no staff controls, sign-out, the session surviving a reload through the cookie while `document.cookie` stays empty); `book-space.spec.ts` (open each night, and the stays that draw them down, book, voucher, reload, cancel); `ui-flows.spec.ts` (refusal messages, the poison rejection, the loser of a race, the Kafka event log). They run against the composed web port and against the Nx dev servers.
 - **CI** (`.github/workflows/ci.yml`) has two jobs. `verify`: `npm ci`, Prettier check, `dotnet format whitespace --verify-no-changes`, unit tests, integration tests (Postgres 17 service) with coverage uploaded, a NuGet vulnerability check, `npm audit`, `nx typecheck` and `nx lint` for web (zero warnings allowed) and `nx build`. `e2e`: builds the Compose stack, runs the smoke and every Playwright spec, and uploads traces and prints logs on failure. Dependabot watches NuGet, npm, Actions and Docker.
