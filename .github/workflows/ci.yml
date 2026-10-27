@@ -40,7 +40,7 @@ jobs:
           dotnet list Hotel.sln package --vulnerable --include-transitive 2>&1 | tee vulnerable.txt
           ! grep -q "has the following vulnerable packages" vulnerable.txt
       - run: npm audit --omit=dev --audit-level=high
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage/
@@ -70,7 +70,7 @@ jobs:
         run: docker compose logs --no-color --tail=300
       - name: Playwright traces
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-results
           path: test-results/
